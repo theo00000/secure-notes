@@ -2,21 +2,7 @@ import { getDatabase } from "./database";
 import { createId } from "../../utils/id";
 import { nowIso } from "../../utils/date";
 import type { EncryptedNoteRow, Note } from "../../types/note";
-
-function mapRowToNote(row: EncryptedNoteRow): Note {
-  return {
-    id: row.id,
-
-    // SEMENTARA:
-    // Di step crypto nanti, encryptedTitle/encryptedBody akan didekripsi dulu.
-    title: row.encryptedTitle,
-    body: row.encryptedBody,
-
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
-    pinned: row.pinned === 1,
-  };
-}
+import { decryptNoteRow, encryptNoteContent } from "../crypto/cryptoService";
 
 export async function getAllNotes(): Promise<Note[]> {
   const db = await getDatabase();
@@ -27,7 +13,9 @@ export async function getAllNotes(): Promise<Note[]> {
     ORDER BY pinned DESC, updatedAt DESC;
   `);
 
-  return rows.map(mapRowToNote);
+  const notes = await Promise.all(rows.map((row) => decryptNoteRow(row)));
+
+  return notes;
 }
 
 export async function getNoteById(id: string): Promise<Note | null> {
@@ -44,7 +32,7 @@ export async function getNoteById(id: string): Promise<Note | null> {
 
   if (!row) return null;
 
-  return mapRowToNote(row);
+  return decryptNoteRow(row);
 }
 
 export async function createEmptyNote(): Promise<Note> {
@@ -52,6 +40,8 @@ export async function createEmptyNote(): Promise<Note> {
 
   const id = createId();
   const createdAt = nowIso();
+
+  const encrypted = await encryptNoteContent("", "");
 
   await db.runAsync(
     `
@@ -69,7 +59,18 @@ export async function createEmptyNote(): Promise<Note> {
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
     `,
-    [id, "", "", null, null, null, null, createdAt, createdAt, 0],
+    [
+      id,
+      encrypted.encryptedTitle,
+      encrypted.encryptedBody,
+      encrypted.titleIv,
+      encrypted.bodyIv,
+      encrypted.titleAuthTag,
+      encrypted.bodyAuthTag,
+      createdAt,
+      createdAt,
+      0,
+    ],
   );
 
   return {
@@ -89,15 +90,30 @@ export async function updateNoteContent(
 ): Promise<void> {
   const db = await getDatabase();
 
+  const encrypted = await encryptNoteContent(title, body);
+
   await db.runAsync(
     `
     UPDATE notes
     SET encryptedTitle = ?,
         encryptedBody = ?,
+        titleIv = ?,
+        bodyIv = ?,
+        titleAuthTag = ?,
+        bodyAuthTag = ?,
         updatedAt = ?
     WHERE id = ?;
     `,
-    [title, body, nowIso(), id],
+    [
+      encrypted.encryptedTitle,
+      encrypted.encryptedBody,
+      encrypted.titleIv,
+      encrypted.bodyIv,
+      encrypted.titleAuthTag,
+      encrypted.bodyAuthTag,
+      nowIso(),
+      id,
+    ],
   );
 }
 
